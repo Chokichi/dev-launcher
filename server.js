@@ -99,6 +99,19 @@ function saveRegistry(list) {
 }
 function findProject(list, id) { return list.find(p => p.id === id); }
 
+// Folders are the project identity. Resolve + drop trailing slashes; on Windows
+// compare case-insensitively so "C:\Dev\app" and "c:\dev\app\" count as the same.
+function canonPath(p) {
+  const s = String(p || '').trim();
+  if (!s) return '';
+  let abs;
+  try { abs = fs.realpathSync(s); }
+  catch { abs = path.resolve(s); }
+  const root = path.parse(abs).root;
+  if (abs !== root) abs = abs.replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
+}
+
 // Is something already listening on this port?
 function isPortInUse(port) {
   return new Promise((resolve) => {
@@ -213,6 +226,10 @@ app.post('/api/projects', (req, res) => {
   const { name, cwd, commands, category, tags, favorite, hidden, collapsed } = req.body || {};
   if (!name || !cwd) return res.status(400).json({ error: 'name and cwd are required' });
   const list = loadRegistry();
+  const key = canonPath(cwd);
+  if (key && list.some(p => canonPath(p.cwd) === key)) {
+    return res.status(409).json({ error: 'duplicate', detail: 'A project for this folder is already in the list.' });
+  }
   const taken = new Set(list.map(p => p.id));
   const project = normalizeProject({ name, cwd, commands, category, tags, favorite, hidden, collapsed }, taken);
   list.push(project);
@@ -464,6 +481,7 @@ app.post('/api/scan', (req, res) => {
   if (!root || !fs.existsSync(root)) return res.status(400).json({ error: 'Folder not found' });
 
   const SKIP = new Set(['node_modules', '.git', 'bin', 'obj', 'dist', 'build', '.next', '.vs']);
+  const existing = new Set(loadRegistry().map(p => canonPath(p.cwd)).filter(Boolean));
   const found = [];
   const seen = new Set();
 
@@ -477,10 +495,10 @@ app.post('/api/scan', (req, res) => {
     if (hasPkg && !seen.has(dir)) {
       seen.add(dir);
       const meta = primaryCommands(dir) || { name: path.basename(dir), commands: [{ label: 'dev', cmd: 'npm run dev', port: null }] };
-      found.push({ name: meta.name, cwd: dir, commands: meta.commands });
+      found.push({ name: meta.name, cwd: dir, commands: meta.commands, alreadyAdded: existing.has(canonPath(dir)) });
     } else if (csproj && !seen.has(dir)) {
       seen.add(dir);
-      found.push({ name: path.basename(csproj, '.csproj'), cwd: dir, commands: [{ label: 'dotnet run', cmd: 'dotnet run', port: null }] });
+      found.push({ name: path.basename(csproj, '.csproj'), cwd: dir, commands: [{ label: 'dotnet run', cmd: 'dotnet run', port: null }], alreadyAdded: existing.has(canonPath(dir)) });
     }
     // Don't descend into a project's own subtree once matched (keeps it clean).
     if (hasPkg || csproj) return;

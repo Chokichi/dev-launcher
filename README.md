@@ -31,8 +31,9 @@ offline. If you edit the UI source under `src/`, restart the server to rebuild t
   automatically — npm / **pnpm** / **yarn** / **bun** — from the lockfile or the
   `packageManager` field, so you get `pnpm dev`, `bun run dev`, etc.
 - **Scan folder** — point it at `C:\dev` and it finds every folder with a
-  `package.json` or `.csproj` so you can bulk-add. Add more commands afterwards
-  with Edit.
+  `package.json` or `.csproj` so you can bulk-add. Folders already in your list
+  are marked and skipped so you don’t get duplicates. Add more commands
+  afterwards with Edit.
 - **Run / Stop** — Run spawns the command in that folder; Stop kills the whole
   process tree (so `npm run dev` doesn't leave the real dev server orphaned).
   Quitting the launcher stops everything it started.
@@ -49,6 +50,8 @@ offline. If you edit the UI source under `src/`, restart the server to rebuild t
 - **Category & tags** — a category pill plus `#tag` chips; click a tag to filter.
 - **Filter bar** — tiny **All / Fav / Hidden** pills (with counts) up top, plus one
   pill per category. Hidden projects only show under **Hidden**.
+- **Search** — type in the search box to filter by name, folder, category, tags,
+  or command.
 - **Collapse / expand** — click a project header to fold its command list. The
   state is saved per project and survives refresh and restart.
 

@@ -116,16 +116,24 @@ export function ScanModal({ onClose, onImport }) {
     const res = await api.scan(root).catch(() => ({ candidates: [] }));
     setBusy(false);
     if (res.error) { setCands([]); return; }
-    setCands(res.candidates || []);
-    setPicked(Object.fromEntries((res.candidates || []).map((_, i) => [i, true])));
+    const list = res.candidates || [];
+    const ordered = [...list.filter(c => !c.alreadyAdded), ...list.filter(c => c.alreadyAdded)];
+    setCands(ordered);
+    setPicked(Object.fromEntries(ordered.map((c, i) => [i, !c.alreadyAdded])));
   };
-  const toggle = (i) => setPicked({ ...picked, [i]: !picked[i] });
-  const doImport = () => onImport(cands.filter((_, i) => picked[i]));
+  const toggle = (i) => {
+    if (cands[i] && cands[i].alreadyAdded) return;
+    setPicked({ ...picked, [i]: !picked[i] });
+  };
+  const selected = cands ? cands.filter((c, i) => picked[i] && !c.alreadyAdded) : [];
+  const dupCount = cands ? cands.filter(c => c.alreadyAdded).length : 0;
+  const newCount = cands ? cands.length - dupCount : 0;
+  const doImport = () => { if (selected.length) onImport(selected); };
   return (
     <div className="scrim" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <h2>Scan a folder</h2>
-        <p className="hint">Finds every folder with a package.json or .csproj, so you can bulk-add scattered projects. Add more commands per project afterwards with Edit.</p>
+        <p className="hint">Finds every folder with a package.json or .csproj, so you can bulk-add scattered projects. Folders already in your list are marked and left unchecked. Add more commands per project afterwards with Edit.</p>
         <div className="field row2">
           <div>
             <label>Root folder</label>
@@ -138,22 +146,34 @@ export function ScanModal({ onClose, onImport }) {
         </div>
         {cands && cands.length === 0 && <p className="hint">Nothing found (or folder not reachable from this machine).</p>}
         {cands && cands.length > 0 && (
-          <div className="cands">
-            {cands.map((c, i) => (
-              <label className="cand" key={i}>
-                <input type="checkbox" checked={!!picked[i]} onChange={() => toggle(i)} />
-                <div style={{ minWidth: 0 }}>
-                  <div className="c-name">{c.name} <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)', fontSize: 11 }}>{(c.commands[0] && c.commands[0].cmd) || 'no command'}</span></div>
-                  <div className="c-path">{c.cwd}</div>
-                </div>
-              </label>
-            ))}
-          </div>
+          <>
+            <p className="scan-sum">
+              {newCount === 0 && dupCount > 0
+                ? `${dupCount} already added — nothing new to import.`
+                : `${newCount} new${dupCount ? ` · ${dupCount} already added` : ''}`}
+            </p>
+            <div className="cands">
+              {cands.map((c, i) => (
+                <label className={`cand ${c.alreadyAdded ? 'dup' : ''}`} key={i}>
+                  <input type="checkbox" checked={!!picked[i]} disabled={!!c.alreadyAdded} onChange={() => toggle(i)} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="c-name">
+                      {c.name}
+                      {c.alreadyAdded ? <span className="dup-badge">already added</span> : (
+                        <span style={{ color: 'var(--amber)', fontFamily: 'var(--mono)', fontSize: 11 }}> {(c.commands[0] && c.commands[0].cmd) || 'no command'}</span>
+                      )}
+                    </div>
+                    <div className="c-path">{c.cwd}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </>
         )}
         <div className="modal-actions">
           <button className="ghost" onClick={onClose}>Close</button>
-          {cands && cands.length > 0 && (
-            <button className="primary" onClick={doImport}>Add {Object.values(picked).filter(Boolean).length} selected</button>
+          {cands && newCount > 0 && (
+            <button className="primary" disabled={!selected.length} onClick={doImport}>Add {selected.length} selected</button>
           )}
         </div>
       </div>

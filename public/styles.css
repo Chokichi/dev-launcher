@@ -135,6 +135,49 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .filt.cat { text-transform: none; }
 .filt-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
 
+.searchbox {
+  position: relative;
+  margin-left: auto;
+  flex: 1 1 180px;
+  max-width: 260px;
+  min-width: 160px;
+}
+.searchbox .s-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+  display: block;
+}
+.searchbox input {
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 20px;
+  padding: 5px 28px 5px 28px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+}
+.searchbox input:focus { outline: none; border-color: var(--amber); }
+.searchbox input::placeholder { color: var(--muted); }
+.searchbox input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.searchbox .s-clear {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 7px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+.searchbox .s-clear:hover { color: var(--text); background: transparent; border: none; }
+
 /* ---- Bulk action bar ---- */
 .bulkbar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
@@ -535,6 +578,19 @@ button.small { padding: 5px 10px; font-size: 12px; }
 .cand input { accent-color: var(--amber); width: 15px; height: 15px; }
 .cand .c-name { font-weight: 600; font-size: 13px; }
 .cand .c-path { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.cand.dup { opacity: .55; }
+.cand.dup input { cursor: not-allowed; }
+.dup-badge {
+  margin-left: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.scan-sum { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 
 /* toast */
 .toast {
@@ -553,6 +609,7 @@ button.small { padding: 5px 10px; font-size: 12px; }
   .cmd-edit { grid-template-columns: 1fr 60px 32px; }
   .cmd-edit .ce-cmd { grid-column: 1 / -1; }
   .masthead { flex-direction: column; align-items: flex-start; }
+  .searchbox { max-width: none; flex-basis: 100%; margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

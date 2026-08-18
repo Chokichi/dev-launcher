@@ -17,6 +17,7 @@ export function App() {
   const [view, setView] = useState('all');          // all | fav | hidden
   const [cat, setCat] = useState('');                // category filter ('' = any)
   const [tag, setTag] = useState('');                // tag filter ('' = any)
+  const [query, setQuery] = useState('');            // free-text search
   const [obsoleteFor, setObsoleteFor] = useState(null); // project pending node_modules cleanup
   const [docsFor, setDocsFor] = useState(null);         // {pid, docs} for the markdown viewer
   const [removeFor, setRemoveFor] = useState(null);     // project pending removal confirmation
@@ -134,7 +135,17 @@ export function App() {
     hidden: projects.filter(p => p.hidden).length,
   };
   const inView = (p) => view === 'hidden' ? p.hidden : view === 'fav' ? (p.favorite && !p.hidden) : !p.hidden;
-  const visible = projects.filter(p => inView(p) && (!cat || p.category === cat) && (!tag || (p.tags || []).includes(tag)));
+  const matchesQuery = (p) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    const hay = [
+      p.name, p.cwd, p.category,
+      ...(p.tags || []),
+      ...(p.commands || []).flatMap(c => [c.label, c.cmd]),
+    ].join('\n').toLowerCase();
+    return q.split(/\s+/).every(term => hay.includes(term));
+  };
+  const visible = projects.filter(p => inView(p) && (!cat || p.category === cat) && (!tag || (p.tags || []).includes(tag)) && matchesQuery(p));
 
   // ---- Bulk selection & actions ----
   const selectedProjects = projects.filter(p => selected.has(p.id));
@@ -206,6 +217,23 @@ export function App() {
             <button key={c} className={`filt cat ${cat === c ? 'active' : ''}`} onClick={() => setCat(cat === c ? '' : c)}>{c}</button>
           ))}
           {tag && <button className="filt tagf active" onClick={() => setTag('')}>#{tag} ✕</button>}
+          <label className="searchbox">
+            <svg className="s-icon" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M10.5 10.5L14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') setQuery(''); }}
+              placeholder="Search projects…"
+              aria-label="Search projects"
+            />
+            {query && (
+              <button type="button" className="s-clear" title="Clear search" onClick={() => setQuery('')}>✕</button>
+            )}
+          </label>
         </div>
       )}
 
@@ -233,7 +261,7 @@ export function App() {
       ) : visible.length === 0 ? (
         <div className="empty">
           <h3>Nothing here</h3>
-          <p>No projects match this filter.</p>
+          <p>No projects match this {query.trim() ? 'search' : 'filter'}.</p>
         </div>
       ) : (
         <div className="board">
