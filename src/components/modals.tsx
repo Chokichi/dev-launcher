@@ -106,21 +106,27 @@ export function ProjectModal({ initial, onClose, onSave, onDelete, categories })
   );
 }
 
-export function ScanModal({ onClose, onImport }) {
-  const [root, setRoot] = useState('');
+export function ScanModal({ onClose, onImport, initialRoot = '', autoScan = false, onRootSaved }) {
+  const [root, setRoot] = useState(initialRoot || '');
   const [cands, setCands] = useState(null);
   const [picked, setPicked] = useState({});
-  const [busy, setBusy] = useState(false);
-  const scan = async () => {
+  const [busy, setBusy] = useState(!!autoScan);
+  const scan = async (dir) => {
+    const target = String(typeof dir === 'string' ? dir : root).trim();
+    if (!target) return;
     setBusy(true);
-    const res = await api.scan(root).catch(() => ({ candidates: [] }));
+    const res = await api.scan(target).catch(() => ({ candidates: [] }));
     setBusy(false);
+    if (res.scanRoot && onRootSaved) onRootSaved(res.scanRoot);
     if (res.error) { setCands([]); return; }
     const list = res.candidates || [];
     const ordered = [...list.filter(c => !c.alreadyAdded), ...list.filter(c => c.alreadyAdded)];
     setCands(ordered);
     setPicked(Object.fromEntries(ordered.map((c, i) => [i, !c.alreadyAdded])));
   };
+  useEffect(() => {
+    if (autoScan && (initialRoot || '').trim()) scan(initialRoot);
+  }, []);
   const toggle = (i) => {
     if (cands[i] && cands[i].alreadyAdded) return;
     setPicked({ ...picked, [i]: !picked[i] });
@@ -132,16 +138,18 @@ export function ScanModal({ onClose, onImport }) {
   return (
     <div className="scrim" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <h2>Scan a folder</h2>
-        <p className="hint">Finds every folder with a package.json or .csproj, so you can bulk-add scattered projects. Folders already in your list are marked and left unchecked. Add more commands per project afterwards with Edit.</p>
+        <h2>{autoScan ? 'Re-scan folder' : 'Scan a folder'}</h2>
+        <p className="hint">{autoScan
+          ? 'Looking for new projects in your saved folder. Already-added folders stay unmarked.'
+          : 'Finds every folder with a package.json or .csproj, so you can bulk-add scattered projects. Folders already in your list are marked and left unchecked. Add more commands per project afterwards with Edit.'}</p>
         <div className="field row2">
           <div>
             <label>Root folder</label>
-            <input value={root} onChange={e => setRoot(e.target.value)} placeholder="C:\dev" onKeyDown={e => e.key === 'Enter' && scan()} autoFocus />
+            <input value={root} onChange={e => setRoot(e.target.value)} placeholder="C:\dev" onKeyDown={e => e.key === 'Enter' && scan()} autoFocus={!autoScan} />
           </div>
           <div>
             <label>&nbsp;</label>
-            <button className="primary" style={{ width: '100%' }} disabled={!root.trim() || busy} onClick={scan}>{busy ? 'Scanning…' : 'Scan'}</button>
+            <button className="primary" style={{ width: '100%' }} disabled={!root.trim() || busy} onClick={() => scan()}>{busy ? 'Scanning…' : 'Scan'}</button>
           </div>
         </div>
         {cands && cands.length === 0 && <p className="hint">Nothing found (or folder not reachable from this machine).</p>}

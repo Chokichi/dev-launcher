@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './lib/api';
 import { ProjectCard } from './components/ProjectCard';
 import {
@@ -12,7 +12,9 @@ export function App() {
   const [projects, setProjects] = useState([]);
   const [conflicts, setConflicts] = useState({}); // "pid::cid" -> {port, owner}
   const [modal, setModal] = useState(null);        // {type:'add'|'edit', project?}
-  const [scan, setScan] = useState(false);
+  const [scan, setScan] = useState(null);          // null | { auto: boolean }
+  const [scanRoot, setScanRoot] = useState('');
+  const pendingCollapse = useRef(new Map());        // id -> collapsed, until the server agrees
   const [toast, setToast] = useState(null);
   const [view, setView] = useState('all');          // all | fav | hidden
   const [cat, setCat] = useState('');                // category filter ('' = any)
@@ -25,15 +27,25 @@ export function App() {
   const [bulkEdit, setBulkEdit] = useState(false);      // bulk category/tags modal
   const [bulkRemove, setBulkRemove] = useState(false);  // bulk remove confirm
   const [bulkClean, setBulkClean] = useState(false);    // bulk clean confirm
+  const [checking, setChecking] = useState(false);      // localhost port discover
 
   const flash = (text, err) => { setToast({ text, err }); setTimeout(() => setToast(null), 2600); };
 
   const refresh = useCallback(async () => {
-    try { setProjects(await api.list()); } catch {}
+    try {
+      const list = await api.list();
+      setProjects(list.map(p => {
+        if (!pendingCollapse.current.has(p.id)) return p;
+        const next = pendingCollapse.current.get(p.id);
+        if (!!p.collapsed === next) pendingCollapse.current.delete(p.id);
+        return { ...p, collapsed: next };
+      }));
+    } catch {}
   }, []);
 
   useEffect(() => {
     refresh();
+    api.settings().then(s => { if (s && s.scanRoot) setScanRoot(s.scanRoot); }).catch(() => {});
     const t = setInterval(refresh, 2000);
     return () => clearInterval(t);
   }, [refresh]);
@@ -86,7 +98,11 @@ export function App() {
 
   const importScan = async (items) => {
     for (const it of items) await api.add(it);
-    setScan(false);
+    setScan(null);
+    try {
+      const s = await api.settings();
+      if (s && s.scanRoot) setScanRoot(s.scanRoot);
+    } catch {}
     flash(`Added ${items.length} project${items.length === 1 ? '' : 's'}`);
     refresh();
   };
@@ -122,9 +138,10 @@ export function App() {
   const toggleCollapse = async (p) => {
     const next = !p.collapsed;
     // Optimistic: flip immediately, then persist so it survives refresh/restart.
+    // Hold the value across in-flight polls so they can't bounce the row back open.
+    pendingCollapse.current.set(p.id, next);
     setProjects(prev => prev.map(x => (x.id === p.id ? { ...x, collapsed: next } : x)));
     await api.update(p.id, { collapsed: next });
-    refresh();
   };
 
   const liveCount = projects.reduce((n, p) => n + p.commands.filter(c => c.running).length, 0);
@@ -145,7 +162,9 @@ export function App() {
     ].join('\n').toLowerCase();
     return q.split(/\s+/).every(term => hay.includes(term));
   };
-  const visible = projects.filter(p => inView(p) && (!cat || p.category === cat) && (!tag || (p.tags || []).includes(tag)) && matchesQuery(p));
+  const visible = projects
+    .filter(p => inView(p) && (!cat || p.category === cat) && (!tag || (p.tags || []).includes(tag)) && matchesQuery(p))
+    .sort((a, b) => Number(b.commands.some(c => c.running)) - Number(a.commands.some(c => c.running)));
 
   // ---- Bulk selection & actions ----
   const selectedProjects = projects.filter(p => selected.has(p.id));
@@ -192,6 +211,23 @@ export function App() {
     if (skip) doBulkClean(false); else setBulkClean(true);
   };
 
+  const checkPorts = async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      const res = await api.discover();
+      const n = (res && res.found ? res.found.length : 0);
+      const total = (res && typeof res.total === 'number') ? res.total : n;
+      if (n) flash(`Found ${n} running on localhost`);
+      else if (total) flash(`${total} already shown as running`);
+      else flash('No matching servers on localhost');
+      await refresh();
+    } catch {
+      flash('Could not check localhost ports', true);
+    }
+    setChecking(false);
+  };
+
   return (
     <div className="wrap">
       <header className="masthead">
@@ -200,7 +236,13 @@ export function App() {
           <p><span className="live-count">{liveCount}</span> running · {projects.length} project{projects.length === 1 ? '' : 's'}</p>
         </div>
         <div className="toolbar">
-          <button onClick={() => setScan(true)}>Scan folder</button>
+          <button onClick={() => setScan({ auto: false })}>Scan folder</button>
+          {scanRoot && (
+            <button title={`Re-scan ${scanRoot} for new projects`} onClick={() => setScan({ auto: true })}>Re-scan</button>
+          )}
+          <button title="Look for listed projects already listening on localhost" disabled={checking} onClick={checkPorts}>
+            {checking ? 'Checking…' : 'Check ports'}
+          </button>
           <button className="primary" onClick={() => setModal({ type: 'add' })}>Add project</button>
         </div>
       </header>
@@ -299,7 +341,15 @@ export function App() {
           categories={categories}
         />
       )}
-      {scan && <ScanModal onClose={() => setScan(false)} onImport={importScan} />}
+      {scan && (
+        <ScanModal
+          initialRoot={scanRoot}
+          autoScan={!!scan.auto}
+          onClose={() => setScan(null)}
+          onImport={importScan}
+          onRootSaved={setScanRoot}
+        />
+      )}
       {obsoleteFor && <ObsoleteModal project={obsoleteFor} onClose={() => setObsoleteFor(null)} onConfirm={confirmObsolete} />}
       {docsFor && <DocViewer pid={docsFor.pid} docs={docsFor.docs} onClose={() => setDocsFor(null)} />}
       {removeFor && <RemoveModal project={removeFor} onClose={() => setRemoveFor(null)} onConfirm={confirmRemove} />}

@@ -32,11 +32,15 @@ offline. If you edit the UI source under `src/`, restart the server to rebuild t
   `packageManager` field, so you get `pnpm dev`, `bun run dev`, etc.
 - **Scan folder** — point it at `C:\dev` and it finds every folder with a
   `package.json` or `.csproj` so you can bulk-add. Folders already in your list
-  are marked and skipped so you don’t get duplicates. Add more commands
-  afterwards with Edit.
+  are marked and skipped so you don’t get duplicates. The folder is remembered;
+  **Re-scan** looks there again for anything new. Add more commands afterwards
+  with Edit.
 - **Run / Stop** — Run spawns the command in that folder; Stop kills the whole
   process tree (so `npm run dev` doesn't leave the real dev server orphaned).
   Quitting the launcher stops everything it started.
+- **Check ports** — on startup, and when you click **Check ports**, the launcher
+  looks at localhost listeners and matches them to listed projects (by port or
+  folder). It does not scan continuously. Matches show as **found running**.
 - **Port conflicts** — if a command's port is already taken, Run won't start
   blindly. You get "**:5173 — free it & run?**" and one click frees the port and
   starts it. Ports are per command, so a frontend on `:5173` and an API on `:3000`

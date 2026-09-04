@@ -30,6 +30,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 9000;
 const REGISTRY = path.join(__dirname, 'registry.json');
+const SETTINGS = path.join(__dirname, 'settings.json');
 const MAX_LOG_LINES = 600;
 
 // A "session" is one running command. Keyed by `${projectId}::${commandId}`.
@@ -97,6 +98,18 @@ function loadRegistry() {
 function saveRegistry(list) {
   fs.writeFileSync(REGISTRY, JSON.stringify(list, null, 2));
 }
+function loadSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SETTINGS, 'utf8'));
+    if (raw && typeof raw === 'object') return { scanRoot: String(raw.scanRoot || '').trim() };
+  } catch {}
+  return { scanRoot: '' };
+}
+function saveSettings(next) {
+  const scanRoot = String(next && next.scanRoot ? next.scanRoot : '').trim();
+  fs.writeFileSync(SETTINGS, JSON.stringify({ scanRoot }, null, 2));
+  return { scanRoot };
+}
 function findProject(list, id) { return list.find(p => p.id === id); }
 
 // Folders are the project identity. Resolve + drop trailing slashes; on Windows
@@ -125,6 +138,293 @@ function isPortInUse(port) {
     sock.once('error', () => done(false));
     sock.connect(port, '127.0.0.1');
   });
+}
+
+function pidAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function runCmd(cmd, timeout = 2000) {
+  return new Promise((resolve) => {
+    exec(cmd, { timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (_err, stdout) => {
+      resolve(String(stdout || ''));
+    });
+  });
+}
+
+// Editors and desktop apps often have the project folder as cwd and listen on
+// a port; they are not the project's dev server.
+const IGNORE_CMDS = /^(cursor|code|electron|chrome|google|safari|firefox|slack|discord|spotify|finder|dock|rapportd|controlce|identitys|cursorsan|code helpe|cursor hel)/i;
+const SERVER_CMDS = /^(node|nodejs|npm|npx|pnpm|yarn|bun|deno|dotnet|python(\d+(\.\d+)?)?|ruby|php|java|perl|go|next|vite|nuxt|tsx|nodemon|uv|gunicorn|uvicorn|daphne|rails|puma|nginx|caddy|httpd)$/i;
+
+function looksLikeServer(command) {
+  const c = String(command || '').trim();
+  if (!c || IGNORE_CMDS.test(c)) return false;
+  return SERVER_CMDS.test(c);
+}
+
+async function descendantPids(roots) {
+  const found = new Set(roots.filter(Boolean));
+  if (process.platform === 'win32' || found.size === 0) return found;
+  const queue = [...found];
+  while (queue.length) {
+    const pid = queue.pop();
+    const out = await runCmd(`pgrep -P ${pid}`);
+    for (const tok of out.split(/\s+/)) {
+      const child = Number(tok);
+      if (child && !found.has(child)) { found.add(child); queue.push(child); }
+    }
+  }
+  return found;
+}
+
+function parseLsofListen(text) {
+  const byPid = new Map();
+  let cur = null;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    const tag = line[0], val = line.slice(1);
+    if (tag === 'p') {
+      const pid = Number(val);
+      cur = byPid.get(pid) || { pid, command: '', ports: [], cwd: '', cmdLine: '' };
+      if (pid) byPid.set(pid, cur);
+    } else if (!cur) continue;
+    else if (tag === 'c') cur.command = val;
+    else if (tag === 'n') {
+      const m = val.match(/:(\d+)$/);
+      if (m) {
+        const port = Number(m[1]);
+        if (port && !cur.ports.includes(port)) cur.ports.push(port);
+      }
+    }
+  }
+  return [...byPid.values()];
+}
+
+async function listListeningUnix() {
+  const raw = await runCmd('lsof -nP -iTCP -sTCP:LISTEN -F pcPn');
+  const recs = parseLsofListen(raw).filter(d => d.pid && d.pid !== process.pid);
+  const pids = recs.map(d => d.pid);
+  for (let i = 0; i < pids.length; i += 40) {
+    const chunk = pids.slice(i, i + 40);
+    const cwdRaw = await runCmd(`lsof -a -p ${chunk.join(',')} -d cwd -Fn`);
+    let pid = 0;
+    for (const line of cwdRaw.split('\n')) {
+      if (!line) continue;
+      if (line[0] === 'p') pid = Number(line.slice(1));
+      else if (line[0] === 'n' && pid) {
+        const rec = recs.find(d => d.pid === pid);
+        if (rec) rec.cwd = line.slice(1).replace(/\s+\(.*\)$/, '');
+      }
+    }
+  }
+  return recs;
+}
+
+async function listListeningWindows() {
+  const raw = await runCmd('netstat -ano -p tcp');
+  const byPid = new Map();
+  for (const line of raw.split('\n')) {
+    if (!/LISTENING/i.test(line)) continue;
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue;
+    const pid = Number(parts[parts.length - 1]);
+    const m = String(parts[1] || '').match(/:(\d+)$/);
+    if (!pid || pid === process.pid || !m) continue;
+    const port = Number(m[1]);
+    let rec = byPid.get(pid);
+    if (!rec) { rec = { pid, command: '', ports: [], cwd: '', cmdLine: '' }; byPid.set(pid, rec); }
+    if (port && !rec.ports.includes(port)) rec.ports.push(port);
+  }
+  const pids = [...byPid.keys()];
+  if (!pids.length) return [];
+  for (let i = 0; i < pids.length; i += 30) {
+    const chunk = pids.slice(i, i + 30);
+    const filter = chunk.map(id => `ProcessId=${id}`).join(' or ');
+    const wmic = await runCmd(`wmic process where "${filter}" get ProcessId,CommandLine /FORMAT:LIST`);
+    let cmdLine = '', pid = 0;
+    const apply = () => {
+      if (pid && byPid.has(pid)) byPid.get(pid).cmdLine = cmdLine.trim();
+    };
+    for (const line of wmic.split(/\r?\n/)) {
+      if (!line.trim()) { apply(); cmdLine = ''; pid = 0; continue; }
+      const eq = line.indexOf('=');
+      if (eq < 0) continue;
+      const k = line.slice(0, eq).trim();
+      const v = line.slice(eq + 1);
+      if (/^CommandLine$/i.test(k)) cmdLine = v;
+      else if (/^ProcessId$/i.test(k)) pid = Number(v);
+    }
+    apply();
+  }
+  return [...byPid.values()];
+}
+
+async function listListeningServers() {
+  try {
+    const recs = process.platform === 'win32' ? await listListeningWindows() : await listListeningUnix();
+    const launcherPort = Number(PORT);
+    const out = [];
+    for (const d of recs) {
+      const ports = (d.ports || []).filter(p => p && p !== launcherPort);
+      if (!ports.length) continue;
+      if (d.cwd && d.cwd.split(/[\\/]/).includes('node_modules')) continue;
+      for (const port of ports) out.push({ ...d, port });
+    }
+    return out;
+  } catch { return []; }
+}
+
+function cmdLineHitsProject(cmdLine, projectCwd) {
+  if (!cmdLine) return false;
+  const key = canonPath(projectCwd);
+  if (!key) return false;
+  const norm = (s) => String(s).toLowerCase().replace(/\//g, '\\');
+  return norm(cmdLine).includes(norm(key));
+}
+
+function pathInsideProject(cwd, projectCwd) {
+  const k = canonPath(cwd);
+  const key = canonPath(projectCwd);
+  if (!k || !key) return false;
+  if (k === key) return true;
+  const sep = process.platform === 'win32' ? '\\' : path.sep;
+  return k.startsWith(key + sep) || k.startsWith(key + '/');
+}
+
+function bestProjectFor(d, projects) {
+  let best = null, len = -1;
+  for (const p of projects) {
+    const key = canonPath(p.cwd);
+    if (!key) continue;
+    let hit = false;
+    if (d.cwd && pathInsideProject(d.cwd, p.cwd)) hit = true;
+    else if (!d.cwd && cmdLineHitsProject(d.cmdLine, p.cwd)) hit = true;
+    if (hit && key.length > len) { best = p; len = key.length; }
+  }
+  return best;
+}
+
+function pickIdleCommand(p, port) {
+  const idle = p.commands.filter(c => !isRunning(sk(p.id, c.id)));
+  if (!idle.length) return null;
+  return idle.find(c => c.port && c.port === port)
+    || idle.find(c => /^(dev|start|serve|run)$/i.test(c.label) || /\b(dev|start|serve)\b/i.test(c.cmd))
+    || idle[0];
+}
+
+function adoptExternal(key, d) {
+  const existing = sessions.get(key);
+  if (existing && existing.alive && existing.external && existing.proc && existing.proc.pid === d.pid) return;
+  const line = {
+    t: Date.now(),
+    stream: 'sys',
+    text: `(found already running outside the launcher — pid ${d.pid}${d.port ? `  :${d.port}` : ''})\n`,
+  };
+  sessions.set(key, {
+    proc: { pid: d.pid },
+    logs: [line],
+    startedAt: null,
+    alive: true,
+    external: true,
+  });
+  for (const cl of subsFor(key)) {
+    cl.write(`event: reset\ndata: 1\n\n`);
+    cl.write(`data: ${JSON.stringify(line)}\n\n`);
+  }
+}
+
+function reapExternal() {
+  for (const s of sessions.values()) {
+    if (s.external && s.alive && !pidAlive(s.proc && s.proc.pid)) s.alive = false;
+  }
+}
+
+function countExternal() {
+  let n = 0;
+  for (const s of sessions.values()) if (s.alive && s.external) n++;
+  return n;
+}
+
+function describeKey(list, key) {
+  const [pid, cid] = String(key).split('::');
+  const p = list.find(x => x.id === pid);
+  const c = p && p.commands.find(x => x.id === cid);
+  const s = sessions.get(key);
+  return {
+    id: pid,
+    name: p ? p.name : pid,
+    label: c ? c.label : cid,
+    port: (c && c.port) || (s && s.proc && s.port) || null,
+    pid: s && s.proc ? s.proc.pid : null,
+  };
+}
+
+let reconciling = null;
+function reconcileExternal(list) {
+  if (!reconciling) {
+    reconciling = doReconcile(list).finally(() => { reconciling = null; });
+  }
+  return reconciling;
+}
+
+async function doReconcile(list) {
+  const already = new Set();
+  for (const [k, s] of sessions) if (s.alive) already.add(k);
+
+  reapExternal();
+  const discovered = await listListeningServers();
+  const owned = new Set([process.pid]);
+  for (const s of sessions.values()) {
+    if (s.alive && s.proc && s.proc.pid) owned.add(s.proc.pid);
+  }
+  for (const pid of await descendantPids([...owned])) owned.add(pid);
+
+  const usedPids = new Set(owned);
+
+  // Port match: a listed command's port is held by a process we didn't spawn.
+  for (const d of discovered) {
+    if (usedPids.has(d.pid)) continue;
+    const folder = bestProjectFor(d, list);
+    const candidates = [];
+    for (const p of list) {
+      for (const c of p.commands) {
+        if (c.port !== d.port) continue;
+        const key = sk(p.id, c.id);
+        if (isRunning(key)) { usedPids.add(d.pid); continue; }
+        candidates.push({ p, c, key });
+      }
+    }
+    if (!candidates.length) continue;
+    const chosen = folder
+      ? candidates.find(x => x.p.id === folder.id)
+      : (candidates.length === 1 ? candidates[0] : null);
+    if (!chosen) continue;
+    if (IGNORE_CMDS.test(d.command || '')) continue;
+    adoptExternal(chosen.key, d);
+    usedPids.add(d.pid);
+  }
+
+  // Folder match: a listener's cwd (or command line) belongs to a listed project.
+  for (const d of discovered) {
+    if (usedPids.has(d.pid)) continue;
+    if (IGNORE_CMDS.test(d.command || '')) continue;
+    const folder = bestProjectFor(d, list);
+    if (!folder) continue;
+    const exact = d.cwd && canonPath(d.cwd) === canonPath(folder.cwd);
+    if (!exact && !looksLikeServer(d.command) && !cmdLineHitsProject(d.cmdLine, folder.cwd)) continue;
+    const cmd = pickIdleCommand(folder, d.port);
+    if (!cmd) continue;
+    adoptExternal(sk(folder.id, cmd.id), d);
+    usedPids.add(d.pid);
+  }
+
+  const found = [];
+  for (const [k, s] of sessions) {
+    if (s.alive && s.external && !already.has(k)) found.push(describeKey(list, k));
+  }
+  return { found, total: countExternal() };
 }
 
 // Which package manager does this folder use? Prefer the explicit
@@ -182,6 +482,7 @@ function primaryCommands(dir) {
 // ---- Projects ----
 app.get('/api/projects', async (req, res) => {
   const list = loadRegistry();
+  reapExternal();
 
   // Which ports are currently held by a running command (for ownership labels)?
   const runningPorts = [];
@@ -212,9 +513,10 @@ app.get('/api/projects', async (req, res) => {
       return {
         ...c,
         running,
+        external: !!(running && s && s.external),
         portBusy: c.port ? !!busy.get(c.port) : false,
         portOwner: owner ? `${owner.name}${owner.label ? ' · ' + owner.label : ''}` : null,
-        startedAt: running && s ? s.startedAt : null,
+        startedAt: running && s && s.startedAt ? s.startedAt : null,
         exited: !!(s && !s.alive),
       };
     }),
@@ -434,7 +736,8 @@ app.post('/api/projects/:id/commands/:cid/stop', (req, res) => {
   const entry = sessions.get(key);
   if (!entry || !entry.alive) return res.status(404).json({ error: 'not_running' });
   treeKill(entry.proc.pid, 'SIGTERM', (err) => {
-    if (err) return res.status(500).json({ error: String(err) });
+    if (entry.external) entry.alive = false;
+    if (err && !entry.external) return res.status(500).json({ error: String(err) });
     res.json({ ok: true });
   });
 });
@@ -510,7 +813,28 @@ app.post('/api/scan', (req, res) => {
   }
 
   walk(root, 0);
-  res.json({ candidates: found });
+  let scanRoot = '';
+  try { scanRoot = saveSettings({ scanRoot: path.resolve(root) }).scanRoot; } catch {}
+  res.json({ candidates: found, scanRoot });
+});
+
+app.post('/api/discover', async (req, res) => {
+  const list = loadRegistry();
+  try {
+    const result = await reconcileExternal(list);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: 'discover_failed', detail: String(e && e.message ? e.message : e), found: [], total: 0 });
+  }
+});
+
+app.get('/api/settings', (req, res) => {
+  res.json(loadSettings());
+});
+
+app.put('/api/settings', (req, res) => {
+  const scanRoot = String((req.body && req.body.scanRoot) || '').trim();
+  res.json(saveSettings({ scanRoot }));
 });
 
 // Kill every child dev server we spawned before we exit, so nothing is left
@@ -533,7 +857,15 @@ process.on('SIGTERM', shutdown);
 try { saveRegistry(loadRegistry()); } catch {}
 
 buildClient()
-  .then(() => {
+  .then(async () => {
+    try {
+      const { found } = await reconcileExternal(loadRegistry());
+      if (found.length) {
+        console.log(`  Found ${found.length} already-running project${found.length === 1 ? '' : 's'} on localhost.`);
+      }
+    } catch (e) {
+      console.warn('  Could not check localhost ports:', e && e.message ? e.message : e);
+    }
     app.listen(PORT, () => {
       console.log(`\n  Dev Launcher  →  http://localhost:${PORT}\n`);
     });

@@ -15,4 +15,6 @@ export const api = {
   freePort: (port) => fetch(`/api/port/${port}/free`, { method: 'POST' }).then(r => r.json()),
   detect: (cwd) => fetch('/api/detect', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ cwd }) }).then(r => r.json()),
   scan: (root) => fetch('/api/scan', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ root }) }).then(r => r.json()),
+  settings: () => fetch('/api/settings').then(r => r.json()),
+  discover: () => fetch('/api/discover', { method: 'POST' }).then(r => r.json()),
 };

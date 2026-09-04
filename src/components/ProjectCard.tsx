@@ -14,16 +14,22 @@ function PortChip({ c }) {
   );
 }
 
-function CommandRow({ pid, c, onRun, onStop, conflict, onResolve, onDismiss }) {
+function CommandRow({ pid, c, collapsed, onRun, onStop, conflict, onResolve, onDismiss }) {
   const [showLogs, setShowLogs] = useState(false);
-  useEffect(() => { if (c.running) setShowLogs(true); }, [c.running]);
+  useEffect(() => {
+    if (c.running && !c.external && !collapsed) setShowLogs(true);
+  }, [c.running, c.external]);
   return (
     <div className={`cmd-row ${c.running ? 'running' : ''}`}>
       <div className="cmd-line">
         <span className={`lamp sm ${c.running ? 'on' : c.exited ? 'exited' : ''}`} />
         <div className="cmd-identity">
           <span className="cmd-label">{c.label}</span>
-          <span className="cmd-text">{c.cmd}{c.running && c.startedAt ? `  ·  up ${uptime(c.startedAt)}` : ''}</span>
+          <span className="cmd-text">
+            {c.cmd}
+            {c.running && c.external ? '  ·  found running' : ''}
+            {c.running && c.startedAt ? `  ·  up ${uptime(c.startedAt)}` : ''}
+          </span>
         </div>
         <PortChip c={c} />
         <div className="actions">
@@ -115,24 +121,23 @@ export function ProjectCard({ p, selected, onSelect, onRun, onStop, onEdit, onRe
           <button className="iconbtn" title="Edit project & commands" onClick={() => onEdit(p)}>Edit</button>
         </div>
       </div>
-      {!collapsed && (
-        <div className="cmd-list">
-          {p.commands.length === 0 ? (
-            <div className="no-cmds">No commands yet — <button className="linkbtn" onClick={() => onEdit(p)}>add one</button>.</div>
-          ) : p.commands.map(c => (
-            <CommandRow
-              key={c.id}
-              pid={p.id}
-              c={c}
-              onRun={onRun}
-              onStop={onStop}
-              conflict={conflicts[`${p.id}::${c.id}`]}
-              onResolve={onResolve}
-              onDismiss={onDismiss}
-            />
-          ))}
-        </div>
-      )}
+      <div className="cmd-list" hidden={collapsed}>
+        {p.commands.length === 0 ? (
+          <div className="no-cmds">No commands yet — <button className="linkbtn" onClick={() => onEdit(p)}>add one</button>.</div>
+        ) : p.commands.map(c => (
+          <CommandRow
+            key={c.id}
+            pid={p.id}
+            c={c}
+            collapsed={collapsed}
+            onRun={onRun}
+            onStop={onStop}
+            conflict={conflicts[`${p.id}::${c.id}`]}
+            onResolve={onResolve}
+            onDismiss={onDismiss}
+          />
+        ))}
+      </div>
     </div>
   );
 }

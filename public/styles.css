@@ -292,6 +292,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* command list within a project */
 .cmd-list { border-top: 1px solid var(--line-soft); }
+.cmd-list[hidden] { display: none; }
 .cmd-row { border-top: 1px solid var(--line-soft); }
 .cmd-row:first-child { border-top: none; }
 .cmd-line {
